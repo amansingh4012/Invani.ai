@@ -1,0 +1,43 @@
+# ── Indian Voice Agent — Git Ignore ──
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (frontend)
+node_modules/
+frontend/dist/
+frontend/build/
+.vercel/
+
+# Audio files generated during testing
+*.wav
+*.mp3
+*.pcm
+mock_audio/
+
+# Logs
+*.log
+logs/

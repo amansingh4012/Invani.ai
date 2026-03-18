@@ -1,0 +1,38 @@
+# ── Indian Voice Agent — Backend Dependencies ──
+# Python 3.12 required
+# Install: pip install -r requirements.txt
+
+# ── Web Framework ──
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.20
+websockets>=14.0
+
+# ── AI / LLM ──
+anthropic>=0.44.0
+
+# ── Voice Pipeline ──
+pipecat-ai>=0.0.55
+
+# ── Speech (Sarvam AI) — uses httpx (pulled by pipecat/mcp) ──
+# httpx is a transitive dep of pipecat-ai and mcp — no explicit pin needed
+
+# ── Database ──
+supabase>=2.13.0
+
+# ── MCP Servers ──
+mcp>=1.3.0
+
+# ── Configuration ──
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+python-dotenv>=1.0.1
+
+# ── Utilities ──
+python-dateutil>=2.9.0
+pytz>=2024.2
+structlog>=24.4.0
+tenacity>=9.0.0
+
+# ── Audio Processing ──
+soundfile>=0.13.0
