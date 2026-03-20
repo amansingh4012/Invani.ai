@@ -8,11 +8,9 @@
 import { useState, useEffect } from 'react';
 import {
   Search,
-  Filter,
   ChevronDown,
   ChevronRight,
   Phone,
-  Clock,
   X,
   Bot,
   User,

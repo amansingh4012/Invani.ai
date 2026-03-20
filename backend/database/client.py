@@ -22,7 +22,7 @@ Usage:
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -148,6 +148,58 @@ class DatabaseClient:
             return response.data[0] if response.data else None
         except Exception as exc:
             logger.error("db.update_business.error", id=business_id, error=str(exc))
+            return None
+
+    async def assign_number_from_pool(self, business_id: str) -> dict[str, Any] | None:
+        """
+        Assign an available Exotel Virtual Number from the pool to the business.
+        """
+        if self._is_mock:
+            # Simulate grabbing an unused number
+            mock_assigned_number = "+9108047361419"
+            logger.info("mock.assign_number", id=business_id, number=mock_assigned_number)
+            MOCK_BUSINESS["phone_number"] = mock_assigned_number
+            return MOCK_BUSINESS
+
+        try:
+            # 1. Find an unassigned number
+            pool_response = (
+                self._client.table("number_pool")
+                .select("*")
+                .eq("is_assigned", False)
+                .limit(1)
+                .execute()
+            )
+            
+            if not pool_response.data:
+                logger.error("db.assign_number.no_numbers_available")
+                raise ValueError("No unassigned numbers left in the pool")
+                
+            number_row = pool_response.data[0]
+            phone_number = number_row["phone_number"]
+            
+            # 2. Assign to business
+            business_update = (
+                self._client.table("businesses")
+                .update({"phone_number": phone_number})
+                .eq("id", business_id)
+                .execute()
+            )
+            
+            if not business_update.data:
+                raise ValueError(f"Business {business_id} not found")
+                
+            # 3. Mark number as assigned
+            (
+                self._client.table("number_pool")
+                .update({"is_assigned": True, "assigned_to": business_id})
+                .eq("phone_number", phone_number)
+                .execute()
+            )
+            
+            return business_update.data[0]
+        except Exception as exc:
+            logger.error("db.assign_number.error", id=business_id, error=str(exc))
             return None
 
     # ── APPOINTMENTS ──
@@ -292,6 +344,28 @@ class DatabaseClient:
         except Exception as exc:
             logger.error("db.get_appointments_for_day.error", date=appt_date, error=str(exc))
             return []
+
+    async def update_appointment_status(self, appointment_id: str, status: str, notes: str | None = None) -> bool:
+        """Update an appointment's status."""
+        if self._is_mock:
+            logger.info("mock.update_appointment_status", id=appointment_id, status=status)
+            return True
+
+        try:
+            update_data = {"status": status}
+            if notes is not None:
+                update_data["notes"] = notes
+                
+            response = (
+                self._client.table("appointments")
+                .update(update_data)
+                .eq("id", appointment_id)
+                .execute()
+            )
+            return bool(response.data)
+        except Exception as exc:
+            logger.error("db.update_appointment_status.error", id=appointment_id, error=str(exc))
+            return False
 
     # ── CALL LOGS ──
 

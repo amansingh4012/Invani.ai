@@ -91,6 +91,37 @@ async def get_business(business_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to fetch business")
 
 
+@router.post("/{business_id}/assign-number")
+async def assign_business_number(business_id: str) -> dict[str, Any]:
+    """
+    Assign an available Exotel Virtual Number to this business.
+    Returns the updated business object.
+    """
+    logger.info("api.businesses.assign_number", business_id=business_id)
+
+    try:
+        updated_business = await db.assign_number_from_pool(business_id)
+        if not updated_business:
+            raise HTTPException(
+                status_code=400, 
+                detail="Could not assign number. Pool might be empty or business not found."
+            )
+
+        return {
+            "success": True,
+            "business": updated_business,
+            "message": "Successfully assigned a new Exotel Virtual Number.",
+        }
+
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("api.businesses.assign_number_error", business_id=business_id, error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to assign number from pool")
+
+
 @router.patch("/{business_id}")
 async def update_business(
     business_id: str,

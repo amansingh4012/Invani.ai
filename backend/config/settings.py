@@ -50,7 +50,22 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
-    # ── Anthropic (Claude AI) ──
+    # ── AI Provider Selection ──
+    # Choose ONE: "groq" (free), "mistral" (free tier), or "anthropic" (paid)
+    AI_PROVIDER: Literal["groq", "mistral", "anthropic"] = Field(
+        default="groq",
+        description="Which LLM provider to use. Groq and Mistral have free tiers.",
+    )
+
+    # ── Groq (Free — uses Llama 3) ──
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+
+    # ── Mistral (Free tier) ──
+    MISTRAL_API_KEY: str = ""
+    MISTRAL_MODEL: str = "mistral-small-latest"
+
+    # ── Anthropic (Claude AI — paid) ──
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
 

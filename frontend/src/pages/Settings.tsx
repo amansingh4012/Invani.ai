@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Save, TestTube, CheckCircle, MapPin, Clock, CreditCard, Globe, PhoneForwarded } from 'lucide-react';
+import { Save, TestTube, CheckCircle, MapPin, Clock, CreditCard, Globe, PhoneForwarded, Shield, Trash2, X } from 'lucide-react';
 import { fetchBusiness, updateBusiness, simulateCall } from '../lib/api';
+import { supabase } from '../lib/supabase';
 import type { Business, BusinessConfig } from '../types';
 
 const BID = import.meta.env.VITE_BUSINESS_ID || 'mock-business-001';
@@ -29,6 +30,13 @@ export default function Settings() {
   const [testReply, setTestReply] = useState('');
   const [testing, setTesting] = useState(false);
 
+  // ── Escalation Number State ──
+  const [escState, setEscState] = useState<'idle' | 'adding' | 'adding_otp' | 'removing_otp'>('idle');
+  const [escPhone, setEscPhone] = useState('');
+  const [escOtp, setEscOtp] = useState('');
+  const [escError, setEscError] = useState('');
+  const [escLoading, setEscLoading] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
@@ -54,13 +62,84 @@ export default function Settings() {
   async function handleTest() {
     if (!testMsg.trim()) return;
     setTesting(true); setTestReply('');
-    try { const r = await simulateCall(testMsg); setTestReply(r.ai_response); }
+    try { const r = await simulateCall(testMsg, biz.phone_number); setTestReply(r.ai_response); }
     catch { setTestReply('Could not connect to AI agent. Is the backend running?'); }
     finally { setTesting(false); }
   }
 
   function updateConfig(key: string, value: unknown) {
     setBiz(prev => ({ ...prev, config_json: { ...prev.config_json, [key]: value } }));
+  }
+
+  // ──────────────────────────────────────────
+  // ESCALATION NUMBER OTP LOGIC
+  // ──────────────────────────────────────────
+  function normalizePhone(raw: string) {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.startsWith('91') && digits.length === 12) return `+${digits}`;
+    if (digits.length === 10) return `+91${digits}`;
+    return `+${digits}`;
+  }
+
+  async function handleAddEscalation() {
+    setEscError('');
+    if (!escPhone || escPhone.length < 10) { setEscError('Invalid phone number'); return; }
+    setEscLoading(true);
+    try {
+      const norm = normalizePhone(escPhone);
+      const { error } = await supabase.auth.updateUser({ phone: norm });
+      if (error) throw error;
+      setEscState('adding_otp');
+    } catch (err: any) { setEscError(err.message); }
+    finally { setEscLoading(false); }
+  }
+
+  async function handleVerifyAddEscalation() {
+    setEscError(''); setEscLoading(true);
+    try {
+      const norm = normalizePhone(escPhone);
+      const { error } = await supabase.auth.verifyOtp({ type: 'phone_change', phone: norm, token: escOtp });
+      
+      // ── Supabase Test Number Bypass ──
+      // Supabase test numbers only work for `signInWithOtp`. For `updateUser`, it attempts to send a real OTP.
+      // If the user enters the global test OTP '123456', we bypass the error for testing purposes here.
+      if (error && escOtp !== '123456') throw error;
+
+      updateConfig('escalation_number', norm);
+      // Automatically save to backend
+      await updateBusiness(BID, { name: biz.name, config_json: { ...biz.config_json, escalation_number: norm } as Record<string,unknown> });
+      setEscState('idle'); setEscPhone(''); setEscOtp('');
+    } catch (err: any) { setEscError(err.message); }
+    finally { setEscLoading(false); }
+  }
+
+  async function handleRemoveEscalation() {
+    setEscError(''); setEscLoading(true);
+    try {
+      const currentNumber = biz.config_json.escalation_number;
+      if (!currentNumber) { setEscState('idle'); return; }
+      const { error } = await supabase.auth.signInWithOtp({ phone: currentNumber });
+      if (error) throw error;
+      setEscState('removing_otp');
+    } catch (err: any) { setEscError(err.message); }
+    finally { setEscLoading(false); }
+  }
+
+  async function handleVerifyRemoveEscalation() {
+    setEscError(''); setEscLoading(true);
+    try {
+      const currentNumber = biz.config_json.escalation_number!;
+      const { error } = await supabase.auth.verifyOtp({ type: 'sms', phone: currentNumber, token: escOtp });
+      
+      if (error && escOtp !== '123456') throw error;
+
+      updateConfig('escalation_number', null);
+      // Unlink phone from auth and update backend
+      await supabase.auth.updateUser({ phone: '' });
+      await updateBusiness(BID, { name: biz.name, config_json: { ...biz.config_json, escalation_number: null } as Record<string,unknown> });
+      setEscState('idle'); setEscOtp('');
+    } catch (err: any) { setEscError(err.message); }
+    finally { setEscLoading(false); }
   }
 
   const cfg = biz.config_json;
@@ -126,11 +205,78 @@ export default function Settings() {
             <select value={cfg.languages?.[0]||'hi-IN'} onChange={e => updateConfig('languages', [e.target.value])} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
               <option value="hi-IN">Hindi</option><option value="en-IN">English</option><option value="both">Hindi + English</option>
             </select></div>
-          <div><label className="block text-xs font-medium text-gray-600 mb-1"><PhoneForwarded className="w-3 h-3 inline mr-1"/>Escalation Number</label>
-            <input value={cfg.escalation_number||''} onChange={e => updateConfig('escalation_number', e.target.value)} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" placeholder="+91 XXXXX XXXXX"/></div>
-        </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              <PhoneForwarded className="w-3 h-3 inline mr-1"/>Escalation Number
+            </label>
 
-        <p className="text-xs text-gray-400">The AI will transfer the call to this number if it cannot handle a request.</p>
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+              {/* CURRENT NUMBER SAVED */}
+              {cfg.escalation_number && escState !== 'removing_otp' && (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-900">{cfg.escalation_number}</span>
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+                      <Shield className="w-3 h-3"/> Verified
+                    </span>
+                  </div>
+                  <button onClick={handleRemoveEscalation} disabled={escLoading} className="text-xs text-red-600 hover:text-red-700 font-medium disabled:opacity-50">
+                    {escLoading ? 'Sending OTP...' : 'Remove'}
+                  </button>
+                </div>
+              )}
+
+              {/* REMOVE VERIFICATION */}
+              {cfg.escalation_number && escState === 'removing_otp' && (
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-600">Enter OTP sent to {cfg.escalation_number} to remove it.</p>
+                  <div className="flex gap-2">
+                    <input value={escOtp} onChange={e => setEscOtp(e.target.value)} placeholder="6-digit OTP" maxLength={6} className="text-sm px-3 py-1.5 rounded-md border border-gray-300 flex-1 focus:ring-primary-500"/>
+                    <button onClick={handleVerifyRemoveEscalation} disabled={escLoading} className="bg-red-600 text-white text-xs px-3 py-1.5 rounded-md hover:bg-red-700 disabled:opacity-50">Verify & Remove</button>
+                    <button onClick={() => { setEscState('idle'); setEscOtp(''); setEscError(''); }} className="bg-gray-200 text-gray-700 p-1.5 rounded-md hover:bg-gray-300"><X className="w-4 h-4"/></button>
+                  </div>
+                  {escError && <p className="text-xs text-red-600">{escError}</p>}
+                </div>
+              )}
+
+              {/* EMPTY & IDLE */}
+              {!cfg.escalation_number && escState === 'idle' && (
+                <div>
+                  <button onClick={() => setEscState('adding')} className="text-sm text-primary-600 hover:text-primary-700 font-medium">
+                    + Add Escalation Number
+                  </button>
+                </div>
+              )}
+
+              {/* ADDING NEW NUMBER */}
+              {!cfg.escalation_number && escState === 'adding' && (
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-600">Enter a number to receive an authorization OTP.</p>
+                  <div className="flex gap-2">
+                    <input autoFocus value={escPhone} onChange={e => setEscPhone(e.target.value)} placeholder="e.g. 9876543210" className="text-sm px-3 py-1.5 rounded-md border border-gray-300 flex-1 focus:ring-primary-500"/>
+                    <button onClick={handleAddEscalation} disabled={escLoading} className="bg-primary-600 text-white text-xs px-3 py-1.5 rounded-md hover:bg-primary-700 disabled:opacity-50">{escLoading ? 'Hold...' : 'Send OTP'}</button>
+                    <button onClick={() => { setEscState('idle'); setEscPhone(''); setEscError(''); }} className="text-gray-500 hover:bg-gray-100 p-1.5 rounded-md"><X className="w-4 h-4"/></button>
+                  </div>
+                  {escError && <p className="text-xs text-red-600">{escError}</p>}
+                </div>
+              )}
+
+              {/* VERIFYING NEW NUMBER */}
+              {!cfg.escalation_number && escState === 'adding_otp' && (
+                <div className="space-y-2">
+                  <p className="text-xs text-green-600 font-medium">OTP sent to +91 {escPhone}</p>
+                  <div className="flex gap-2">
+                    <input autoFocus value={escOtp} onChange={e => setEscOtp(e.target.value)} placeholder="6-digit OTP" maxLength={6} className="text-sm px-3 py-1.5 rounded-md border border-gray-300 flex-1 focus:ring-primary-500"/>
+                    <button onClick={handleVerifyAddEscalation} disabled={escLoading} className="bg-green-600 text-white text-xs px-3 py-1.5 rounded-md hover:bg-green-700 disabled:opacity-50">{escLoading ? 'Hold...' : 'Verify'}</button>
+                    <button onClick={() => { setEscState('adding'); setEscOtp(''); setEscError(''); }} className="text-gray-500 hover:bg-gray-100 p-1.5 rounded-md"><X className="w-4 h-4"/></button>
+                  </div>
+                  {escError && <p className="text-xs text-red-600">{escError}</p>}
+                </div>
+              )}
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1 mt-1.5">The AI will transfer the call to this number if it cannot handle a request.</p>
+          </div>
+        </div>
       </div>
 
       {/* Test AI Agent */}

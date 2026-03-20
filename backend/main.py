@@ -114,7 +114,7 @@ async def root() -> dict[str, str]:
 # EXOTEL WEBHOOK — Receives call notifications
 # ═══════════════════════════════════════════════════
 
-@app.post("/webhook/exotel")
+@app.api_route("/webhook/exotel", methods=["GET", "POST"])
 async def exotel_webhook(request: Request) -> JSONResponse:
     """
     Handle incoming call notifications from Exotel.
@@ -131,8 +131,9 @@ async def exotel_webhook(request: Request) -> JSONResponse:
         body = await request.body()
         signature = request.headers.get("X-Exotel-Signature", "")
 
-        # ── Verify webhook signature (skipped in mock mode) ──
-        if not verify_exotel_signature(body, signature):
+        # ── Verify webhook signature ──
+        # Skip for GET requests (Passthru applets) since they don't have bodies for HMAC
+        if request.method != "GET" and not verify_exotel_signature(body, signature):
             logger.warning("webhook.invalid_signature")
             return JSONResponse(
                 status_code=403,
@@ -140,12 +141,14 @@ async def exotel_webhook(request: Request) -> JSONResponse:
             )
 
         # ── Extract call data ──
-        try:
-            data = await request.json()
-        except Exception:
-            # ── Exotel sometimes sends form data ──
-            form = await request.form()
-            data = dict(form)
+        if request.method == "GET":
+            data = dict(request.query_params)
+        else:
+            try:
+                data = await request.json()
+            except Exception:
+                form = await request.form()
+                data = dict(form)
 
         call_sid = data.get("CallSid", str(uuid.uuid4()))
         caller_phone = data.get("From", "+910000000000")

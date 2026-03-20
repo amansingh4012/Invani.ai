@@ -249,20 +249,6 @@ async def update_appointment(
     )
 
     try:
-        # ── For cancellation, use the existing cancel flow ──
-        if body.status == "cancelled":
-            # ── In mock mode, always succeeds ──
-            from config.settings import settings
-            if settings.MOCK_MODE:
-                return {
-                    "success": True,
-                    "appointment_id": appointment_id,
-                    "status": "cancelled",
-                    "message": "Appointment cancelled successfully",
-                }
-
-        # ── For other status updates, use generic update ──
-        # ── In production, this would call db.update_appointment() ──
         from config.settings import settings
         if settings.MOCK_MODE:
             return {
@@ -272,8 +258,17 @@ async def update_appointment(
                 "message": f"Appointment status updated to {body.status}",
             }
 
-        # ── Production path (Supabase) — TODO: add db.update_appointment() ──
-        raise HTTPException(status_code=501, detail="Appointment update not yet implemented for production mode")
+        # ── Production path (Supabase) ──
+        success = await db.update_appointment_status(appointment_id, body.status, body.notes)
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to update appointment status")
+            
+        return {
+            "success": True,
+            "appointment_id": appointment_id,
+            "status": body.status,
+            "message": f"Appointment status updated to {body.status}",
+        }
 
     except HTTPException:
         raise

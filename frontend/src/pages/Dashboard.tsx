@@ -3,6 +3,9 @@
  *
  * Shows: AI Agent status banner, 4 stat cards,
  * calls-per-day line chart, and live activity feed.
+ *
+ * For new users with no data, shows clean empty states
+ * instead of dummy/mock data.
  */
 
 import { useState, useEffect } from 'react';
@@ -11,9 +14,12 @@ import {
   CalendarCheck,
   TrendingUp,
   PhoneMissed,
+  PhoneIncoming,
   Activity,
   Mic,
-  Settings,
+  BarChart3,
+  Copy,
+  CheckCircle2
 } from 'lucide-react';
 import {
   LineChart,
@@ -25,27 +31,56 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import StatsCard from '../components/StatsCard';
-import { fetchDashboardStats, fetchActiveCalls, fetchCallLogs } from '../lib/api';
+import { fetchDashboardStats, fetchActiveCalls, fetchCallLogs, assignNumber } from '../lib/api';
+import { useBusiness } from '../context/BusinessContext';
 import type { CallStats, ActiveCall, CallLog } from '../types';
-
-/* ── Mock chart data (replaced by real data when backend is connected) ── */
-const mockChartData = [
-  { day: 'Mon', calls: 32 },
-  { day: 'Tue', calls: 45 },
-  { day: 'Wed', calls: 28 },
-  { day: 'Thu', calls: 56 },
-  { day: 'Fri', calls: 42 },
-  { day: 'Sat', calls: 38 },
-  { day: 'Sun', calls: 48 },
-];
 
 const BUSINESS_ID = import.meta.env.VITE_BUSINESS_ID || 'mock-business-001';
 
+/** Build the "Calls this week" date range label dynamically */
+function getWeekRangeLabel(): string {
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0=Sun
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + mondayOffset);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const fmt = (d: Date) =>
+    d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  return `${fmt(monday)} – ${fmt(sunday)}`;
+}
+
 export default function Dashboard() {
+  const { business, refreshBusiness } = useBusiness();
   const [stats, setStats] = useState<CallStats | null>(null);
-  const [activeCalls, setActiveCalls] = useState<ActiveCall[]>([]);
+  const [_activeCalls, setActiveCalls] = useState<ActiveCall[]>([]);
   const [recentCalls, setRecentCalls] = useState<CallLog[]>([]);
+  const [chartData, setChartData] = useState<{ day: string; calls: number }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [assigningNumber, setAssigningNumber] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyNumber = () => {
+    if (business?.phone_number) {
+      navigator.clipboard.writeText(business.phone_number);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleAssignNumber = async () => {
+    if (!business) return;
+    setAssigningNumber(true);
+    try {
+      await assignNumber(business.id);
+      await refreshBusiness();
+    } catch (err: any) {
+      alert(err.message || 'Failed to assign number. Pool might be empty.');
+    } finally {
+      setAssigningNumber(false);
+    }
+  };
 
   useEffect(() => {
     async function loadData() {
@@ -56,7 +91,15 @@ export default function Dashboard() {
           fetchCallLogs(BUSINESS_ID, { limit: 5 }),
         ]);
 
-        if (statsData.status === 'fulfilled') setStats(statsData.value);
+        if (statsData.status === 'fulfilled') {
+          setStats(statsData.value);
+          // Build chart data from the daily_breakdown if the backend provides it,
+          // otherwise leave chartData empty so the empty state is shown.
+          const s = statsData.value as CallStats & { daily_breakdown?: { day: string; calls: number }[] };
+          if (s.daily_breakdown && s.daily_breakdown.length > 0) {
+            setChartData(s.daily_breakdown);
+          }
+        }
         if (activeData.status === 'fulfilled') setActiveCalls(activeData.value.active_calls);
         if (callsData.status === 'fulfilled') setRecentCalls(callsData.value.calls);
       } catch {
@@ -76,70 +119,109 @@ export default function Dashboard() {
       </div>
 
       {/* ── AI Agent Status Banner ── */}
-      <div className="bg-gradient-to-r from-primary-50 to-white rounded-xl border border-primary-100 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span className="relative flex h-3 w-3">
+      <div className="bg-gradient-to-r from-primary-50 to-white rounded-xl border border-primary-100 p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="flex items-start gap-4">
+          <span className="relative flex h-3 w-3 mt-1 cursor-help" title="Agent is listening for incoming calls">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500" />
           </span>
           <div>
-            <div className="text-sm font-semibold text-gray-900">AI Agent is Active</div>
-            <div className="text-xs text-gray-500">
-              Your virtual receptionist is currently handling inbound queries and scheduling appointments.
+            <div className="text-sm font-semibold text-gray-900 mb-1 flex items-center gap-2">
+              AI Receptionist 
+              <span className="px-2 py-0.5 rounded text-[10px] bg-primary-100 text-primary-700 font-bold uppercase tracking-wider">
+                Active
+              </span>
             </div>
+            
+            {/* SaaS Number Display logic */}
+            {business?.phone_number ? (
+               <div className="flex flex-col sm:flex-row sm:items-center gap-2 mt-2">
+                 <span className="text-xs text-slate-500 font-medium whitespace-nowrap">Your Public AI Number:</span>
+                 <div className="flex items-center gap-2 bg-white border border-primary-200 shadow-sm rounded-lg px-3 py-1.5">
+                   <PhoneIncoming className="w-3.5 h-3.5 text-primary-500" />
+                   <span className="text-[13px] font-bold text-slate-800 tracking-wide">{business.phone_number}</span>
+                   <button 
+                     onClick={handleCopyNumber}
+                     className="ml-1 text-slate-400 hover:text-primary-600 transition-colors focus:outline-none"
+                     title="Copy to clipboard"
+                   >
+                     {copied ? <CheckCircle2 className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                   </button>
+                 </div>
+                 <span className="text-[10px] text-slate-400 max-w-xs leading-tight ml-1">
+                   Publish this number on your website. Incoming calls will be answered instantly by your AI.
+                 </span>
+               </div>
+            ) : (
+               <div className="mt-2 bg-white border border-red-100 p-3 rounded-lg shadow-sm w-full md:max-w-md">
+                 <p className="text-xs text-red-600 font-medium mb-2">No active phone number assigned to your AI Agent.</p>
+                 <button 
+                   onClick={handleAssignNumber}
+                   disabled={assigningNumber}
+                   className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-sm"
+                 >
+                   <Phone className="w-4 h-4" />
+                   {assigningNumber ? 'Assigning Virtual Number...' : 'Get Your AI Phone Number'}
+                 </button>
+               </div>
+            )}
           </div>
         </div>
-        <div className="flex gap-2">
-          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors">
-            <Mic className="w-3.5 h-3.5" />
-            Configure Voice
-          </button>
-          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-600 text-xs font-medium text-white hover:bg-primary-700 transition-colors">
-            <Settings className="w-3.5 h-3.5" />
-            Test Agent
+        
+        {/* Actions */}
+        <div className="flex shrink-0 gap-2 w-full md:w-auto">
+          <button className="flex-1 md:flex-none inline-flex justify-center items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+            <Mic className="w-4 h-4" />
+            Configure
           </button>
         </div>
       </div>
 
       {/* ── Stats Cards Row ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatsCard
-          title="Total Calls Today"
-          value={stats?.total_calls ?? 48}
-          icon={Phone}
-          change={12}
-          iconColor="text-blue-600"
-          iconBg="bg-blue-50"
-          loading={loading}
-        />
-        <StatsCard
-          title="Appointments Booked"
-          value={stats?.appointments_booked ?? 12}
-          icon={CalendarCheck}
-          change={8}
-          iconColor="text-green-600"
-          iconBg="bg-green-50"
-          loading={loading}
-        />
-        <StatsCard
-          title="Conversion Rate"
-          value={stats ? `${Math.round(stats.conversion_rate)}%` : '25%'}
-          icon={TrendingUp}
-          change={-2}
-          iconColor="text-purple-600"
-          iconBg="bg-purple-50"
-          loading={loading}
-        />
-        <StatsCard
-          title="Missed Calls"
-          value={stats?.missed_calls ?? 4}
-          icon={PhoneMissed}
-          change={-18}
-          iconColor="text-red-600"
-          iconBg="bg-red-50"
-          loading={loading}
-        />
-      </div>
+      {(() => {
+        /* Show percentage change badges only when there is real call data */
+        const hasData = (stats?.total_calls ?? 0) > 0;
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatsCard
+              title="Total Calls Today"
+              value={stats?.total_calls ?? 0}
+              icon={Phone}
+              change={hasData ? 12 : undefined}
+              iconColor="text-blue-600"
+              iconBg="bg-blue-50"
+              loading={loading}
+            />
+            <StatsCard
+              title="Appointments Booked"
+              value={stats?.appointments_booked ?? 0}
+              icon={CalendarCheck}
+              change={hasData ? 8 : undefined}
+              iconColor="text-green-600"
+              iconBg="bg-green-50"
+              loading={loading}
+            />
+            <StatsCard
+              title="Conversion Rate"
+              value={stats ? `${Math.round(stats.conversion_rate)}%` : '0%'}
+              icon={TrendingUp}
+              change={hasData ? -2 : undefined}
+              iconColor="text-purple-600"
+              iconBg="bg-purple-50"
+              loading={loading}
+            />
+            <StatsCard
+              title="Missed Calls"
+              value={stats?.missed_calls ?? 0}
+              icon={PhoneMissed}
+              change={hasData ? -18 : undefined}
+              iconColor="text-red-600"
+              iconBg="bg-red-50"
+              loading={loading}
+            />
+          </div>
+        );
+      })()}
 
       {/* ── Charts + Live Activity ── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
@@ -148,7 +230,7 @@ export default function Dashboard() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <div className="text-sm font-semibold text-gray-900">Calls this week</div>
-              <div className="text-xs text-gray-400">Mon 20 May - Sun 26 May</div>
+              <div className="text-xs text-gray-400">{getWeekRangeLabel()}</div>
             </div>
             <select className="text-xs border border-gray-200 rounded-lg px-2 py-1 text-gray-600 bg-white">
               <option>Last 7 Days</option>
@@ -156,39 +238,47 @@ export default function Dashboard() {
             </select>
           </div>
           <div className="h-[220px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={mockChartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis
-                  dataKey="day"
-                  tick={{ fontSize: 12, fill: '#94a3b8' }}
-                  axisLine={{ stroke: '#e2e8f0' }}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 12, fill: '#94a3b8' }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1e293b',
-                    border: 'none',
-                    borderRadius: '8px',
-                    color: '#fff',
-                    fontSize: '12px',
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="calls"
-                  stroke="#4f46e5"
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: '#4f46e5', strokeWidth: 2, stroke: '#fff' }}
-                  activeDot={{ r: 6, fill: '#4f46e5' }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {chartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                  <XAxis
+                    dataKey="day"
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    axisLine={{ stroke: '#e2e8f0' }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#1e293b',
+                      border: 'none',
+                      borderRadius: '8px',
+                      color: '#fff',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="calls"
+                    stroke="#4f46e5"
+                    strokeWidth={2.5}
+                    dot={{ r: 4, fill: '#4f46e5', strokeWidth: 2, stroke: '#fff' }}
+                    activeDot={{ r: 6, fill: '#4f46e5' }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-gray-400">
+                <BarChart3 className="w-10 h-10 mb-2 text-gray-300" />
+                <div className="text-sm font-medium">No call data yet</div>
+                <div className="text-xs mt-1">Call activity will appear here once calls are received</div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -196,16 +286,26 @@ export default function Dashboard() {
         <div className="lg:col-span-2 bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div className="text-sm font-semibold text-gray-900">Live Activity</div>
-            <button className="text-xs text-primary-600 hover:text-primary-700 font-medium">
-              View All
-            </button>
+            {recentCalls.length > 0 && (
+              <button className="text-xs text-primary-600 hover:text-primary-700 font-medium">
+                View All
+              </button>
+            )}
           </div>
 
-          <div className="space-y-3">
-            {(recentCalls.length > 0 ? recentCalls : defaultActivity).map((item, i) => (
-              <ActivityItem key={i} item={item} />
-            ))}
-          </div>
+          {recentCalls.length > 0 ? (
+            <div className="space-y-3">
+              {recentCalls.map((item, i) => (
+                <ActivityItem key={i} item={item} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 text-gray-400">
+              <PhoneIncoming className="w-10 h-10 mb-2 text-gray-300" />
+              <div className="text-sm font-medium">No recent activity</div>
+              <div className="text-xs mt-1 text-center">Incoming calls and their outcomes will show up here</div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -269,11 +369,4 @@ function formatPhone(phone: string): string {
   return phone;
 }
 
-/* ── Default activity data when API is not connected ── */
-const defaultActivity: ActivityItemData[] = [
-  { phone: '+919876543210', duration: '1m 30s', status: 'appointment_booked' },
-  { phone: '+919123456789', duration: '0m 45s', status: 'info_provided' },
-  { phone: '+918887766554', duration: '—', status: 'missed' },
-  { phone: '+919990011122', duration: '2m 15s', status: 'appointment_booked' },
-  { phone: '+917000000001', duration: '1m 05s', status: 'info_provided' },
-];
+

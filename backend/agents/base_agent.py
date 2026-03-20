@@ -3,7 +3,7 @@ Indian Voice Agent — Base Voice Agent (Pipecat Pipeline)
 
 The HEART of the system. Orchestrates the real-time voice pipeline:
 
-    Incoming Audio → Silero VAD → Sarvam STT → Claude AI → Sarvam TTS → Outgoing Audio
+    Incoming Audio → Silero VAD → Sarvam STT → LLM (Groq/Mistral/Claude) → Sarvam TTS → Outgoing Audio
 
 Provides:
 - SarvamSTTService — streaming Hindi/English speech-to-text
@@ -13,7 +13,7 @@ Provides:
 In MOCK_MODE:
 - STT returns hardcoded Hindi transcripts
 - TTS generates silent audio frames
-- Claude responses still work (uses real Anthropic API if key is set)
+- LLM responses route to the configured AI_PROVIDER (groq/mistral/anthropic)
 
 Usage:
     agent = ClinicAgent(business_config=config, call_sid="test-123")
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import json
 import time
 from abc import ABC, abstractmethod
@@ -277,24 +276,39 @@ class SarvamTTSService:
 
 
 # ═══════════════════════════════════════════════════
-# CLAUDE AI — LLM SERVICE
+# LLM SERVICE — Multi-provider AI (Groq / Mistral / Anthropic)
 # ═══════════════════════════════════════════════════
 
-class ClaudeLLMService:
+# ── Provider-specific configuration ──
+_PROVIDER_CONFIG = {
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "key_attr": "GROQ_API_KEY",
+        "model_attr": "GROQ_MODEL",
+    },
+    "mistral": {
+        "base_url": "https://api.mistral.ai/v1",
+        "key_attr": "MISTRAL_API_KEY",
+        "model_attr": "MISTRAL_MODEL",
+    },
+}
+
+
+class LLMService:
     """
-    Sends transcribed text to Claude for understanding and response.
+    Provider-agnostic LLM service — switch between Groq, Mistral, or Anthropic
+    by setting AI_PROVIDER in .env.
 
-    Claude receives:
-    - System prompt (business-specific, loaded from prompts/)
-    - Conversation history (accumulated during the call)
-    - Available tools (appointments, WhatsApp, calendar)
+    Groq and Mistral use the OpenAI-compatible SDK (base_url override).
+    Anthropic uses the native anthropic SDK.
 
-    Returns a short Hindi response suitable for voice.
+    All providers share the same respond() interface, conversation
+    history, and tool-handling logic.
     """
 
     def __init__(self, system_prompt: str, tools: list[dict[str, Any]]) -> None:
         """
-        Initialize Claude with a system prompt and tool definitions.
+        Initialize the LLM with a system prompt and tool definitions.
 
         Args:
             system_prompt: Business-specific instructions from prompts/
@@ -302,18 +316,70 @@ class ClaudeLLMService:
         """
         self._system_prompt = system_prompt
         self._tools = tools
-        self._client: Any = None  # ── Anthropic client, lazy-initialized ──
+        self._client: Any = None
+        self._provider = settings.AI_PROVIDER
+        self._model: str = ""
         self._conversation: list[dict[str, Any]] = []
 
-        if not settings.MOCK_MODE and settings.ANTHROPIC_API_KEY:
-            try:
-                from anthropic import AsyncAnthropic
-                self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-                logger.info("claude_llm.initialized", mode="live", model=settings.ANTHROPIC_MODEL)
-            except ImportError:
-                logger.warning("claude_llm.no_anthropic_package", msg="anthropic package not installed")
+        if settings.MOCK_MODE:
+            logger.info("llm.initialized", mode="mock", provider=self._provider)
+            return
+
+        # ── Initialize the right client based on AI_PROVIDER ──
+        if self._provider in ("groq", "mistral"):
+            self._init_openai_compatible()
+        elif self._provider == "anthropic":
+            self._init_anthropic()
         else:
-            logger.info("claude_llm.initialized", mode="mock")
+            logger.warning("llm.unknown_provider", provider=self._provider)
+
+    def _init_openai_compatible(self) -> None:
+        """Initialize Groq or Mistral via OpenAI SDK with base_url override."""
+        config = _PROVIDER_CONFIG[self._provider]
+        api_key = getattr(settings, config["key_attr"], "")
+        self._model = getattr(settings, config["model_attr"], "")
+
+        if not api_key:
+            logger.warning(
+                "llm.no_api_key",
+                provider=self._provider,
+                msg=f"Set {config['key_attr']} in .env",
+            )
+            return
+
+        try:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=config["base_url"],
+            )
+            logger.info(
+                "llm.initialized",
+                mode="live",
+                provider=self._provider,
+                model=self._model,
+            )
+        except ImportError:
+            logger.warning("llm.no_openai_package", msg="openai package not installed")
+
+    def _init_anthropic(self) -> None:
+        """Initialize Anthropic Claude client."""
+        self._model = settings.ANTHROPIC_MODEL
+
+        if not settings.ANTHROPIC_API_KEY:
+            logger.warning("llm.no_api_key", provider="anthropic", msg="Set ANTHROPIC_API_KEY in .env")
+            return
+
+        try:
+            from anthropic import AsyncAnthropic
+
+            self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+            logger.info("llm.initialized", mode="live", provider="anthropic", model=self._model)
+        except ImportError:
+            logger.warning("llm.no_anthropic_package", msg="anthropic package not installed")
+
+    # ── PUBLIC API ──
 
     async def respond(
         self,
@@ -321,18 +387,18 @@ class ClaudeLLMService:
         tool_handler: Any = None,
     ) -> str:
         """
-        Send user text to Claude and get a response.
+        Send user text to the LLM and get a response.
 
-        Handles tool use: if Claude wants to call a tool (e.g., book_appointment),
-        this method calls the tool handler, sends the result back to Claude,
-        and returns the final text response.
+        Handles tool use: if the LLM wants to call a tool (e.g., book_appointment),
+        this method calls the tool handler, sends the result back, and returns
+        the final text response.
 
         Args:
             user_text: What the caller said (transcribed)
             tool_handler: Async callable that executes MCP tools
 
         Returns:
-            Claude's text response (in Hindi or English)
+            AI text response (in Hindi or English)
         """
         if not user_text.strip():
             return ""
@@ -343,7 +409,10 @@ class ClaudeLLMService:
         if self._client is None:
             return self._get_mock_response(user_text)
 
-        return await self._respond_live(tool_handler)
+        if self._provider in ("groq", "mistral"):
+            return await self._respond_openai(tool_handler)
+        else:
+            return await self._respond_anthropic(tool_handler)
 
     def _get_mock_response(self, user_text: str) -> str:
         """Generate a mock AI response based on keywords in user text."""
@@ -365,21 +434,153 @@ class ClaudeLLMService:
             response = "Ji, main aapki madad kar sakti hoon. Kya aap appointment book karna chahte hain ya koi jaankari chahiye?"
 
         self._conversation.append({"role": "assistant", "content": response})
-        logger.debug("claude_llm.mock_response", response=response[:80])
+        logger.debug("llm.mock_response", response=response[:80])
         return response
 
-    async def _respond_live(self, tool_handler: Any = None) -> str:
-        """Call Claude API with full conversation history and tools."""
+    # ═══════════════════════════════════════════
+    # GROQ / MISTRAL — OpenAI-compatible path
+    # ═══════════════════════════════════════════
+
+    def _build_openai_tools(self) -> list[dict[str, Any]]:
+        """Convert tool schemas to OpenAI function-calling format."""
+        if not self._tools:
+            return []
+
+        openai_tools: list[dict[str, Any]] = []
+        for tool in self._tools:
+            # ── Support both Anthropic-style and OpenAI-style schemas ──
+            if "function" in tool:
+                openai_tools.append(tool)
+            else:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", tool.get("parameters", {})),
+                    },
+                })
+        return openai_tools
+
+    async def _respond_openai(self, tool_handler: Any = None) -> str:
+        """Call Groq/Mistral via OpenAI-compatible API."""
         try:
-            # ── Build the API request ──
+            # ── Build messages with system prompt ──
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": self._system_prompt},
+                *self._conversation,
+            ]
+
             request_params: dict[str, Any] = {
-                "model": settings.ANTHROPIC_MODEL,
+                "model": self._model,
+                "max_tokens": 150,
+                "messages": messages,
+            }
+
+            openai_tools = self._build_openai_tools()
+            if openai_tools:
+                request_params["tools"] = openai_tools
+
+            start_time = time.time()
+            response = await self._client.chat.completions.create(**request_params)
+            latency_ms = round((time.time() - start_time) * 1000, 1)
+
+            choice = response.choices[0]
+            logger.info(
+                "llm.response",
+                provider=self._provider,
+                latency_ms=latency_ms,
+                finish_reason=choice.finish_reason,
+            )
+
+            # ── Handle tool calls ──
+            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+                return await self._handle_openai_tool_use(choice.message, tool_handler)
+
+            # ── Extract text response ──
+            text_response = choice.message.content or ""
+            self._conversation.append({"role": "assistant", "content": text_response})
+            return text_response
+
+        except Exception as exc:
+            logger.error("llm.error", provider=self._provider, error=str(exc))
+            fallback = "Maaf kijiye, abhi thodi technical problem aa rahi hai. Kya aap thodi der baad call kar sakte hain?"
+            self._conversation.append({"role": "assistant", "content": fallback})
+            return fallback
+
+    async def _handle_openai_tool_use(self, message: Any, tool_handler: Any) -> str:
+        """Handle tool calls from Groq/Mistral (OpenAI format)."""
+        # ── Add assistant message with tool calls to history ──
+        self._conversation.append({
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in message.tool_calls
+            ],
+        })
+
+        # ── Execute each tool and collect results ──
+        for tool_call in message.tool_calls:
+            tool_name = tool_call.function.name
+            tool_input = json.loads(tool_call.function.arguments)
+
+            logger.info("llm.tool_use", provider=self._provider, tool=tool_name, input=tool_input)
+
+            tool_result = "Tool not available"
+            if tool_handler:
+                try:
+                    tool_result = await tool_handler(tool_name=tool_name, tool_input=tool_input)
+                except Exception as exc:
+                    logger.error("llm.tool_error", tool=tool_name, error=str(exc))
+                    tool_result = f"Error: {str(exc)}"
+
+            self._conversation.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+            })
+
+        # ── Get final response after tool execution ──
+        try:
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": self._system_prompt},
+                *self._conversation,
+            ]
+            final_response = await self._client.chat.completions.create(
+                model=self._model,
+                max_tokens=150,
+                messages=messages,
+            )
+            final_text = final_response.choices[0].message.content or ""
+            self._conversation.append({"role": "assistant", "content": final_text})
+            return final_text
+
+        except Exception as exc:
+            logger.error("llm.final_response_error", provider=self._provider, error=str(exc))
+            return "Aapka appointment ho gaya hai. WhatsApp pe confirmation aa jayega."
+
+    # ═══════════════════════════════════════════
+    # ANTHROPIC — Claude-native path
+    # ═══════════════════════════════════════════
+
+    async def _respond_anthropic(self, tool_handler: Any = None) -> str:
+        """Call Anthropic Claude API with full conversation history and tools."""
+        try:
+            request_params: dict[str, Any] = {
+                "model": self._model,
                 "max_tokens": 150,
                 "system": self._system_prompt,
                 "messages": self._conversation,
             }
 
-            # ── Only include tools if we have them ──
             if self._tools:
                 request_params["tools"] = self._tools
 
@@ -387,33 +588,23 @@ class ClaudeLLMService:
             response = await self._client.messages.create(**request_params)
             latency_ms = round((time.time() - start_time) * 1000, 1)
 
-            logger.info("claude_llm.response", latency_ms=latency_ms, stop_reason=response.stop_reason)
+            logger.info("llm.response", provider="anthropic", latency_ms=latency_ms, stop_reason=response.stop_reason)
 
-            # ── Handle tool use requests from Claude ──
             if response.stop_reason == "tool_use":
-                return await self._handle_tool_use(response, tool_handler)
+                return await self._handle_anthropic_tool_use(response, tool_handler)
 
-            # ── Extract text response ──
-            text_response = self._extract_text(response)
+            text_response = self._extract_anthropic_text(response)
             self._conversation.append({"role": "assistant", "content": text_response})
             return text_response
 
         except Exception as exc:
-            logger.error("claude_llm.error", error=str(exc))
-            # ── Graceful fallback — return a polite Hindi message ──
+            logger.error("llm.error", provider="anthropic", error=str(exc))
             fallback = "Maaf kijiye, abhi thodi technical problem aa rahi hai. Kya aap thodi der baad call kar sakte hain?"
             self._conversation.append({"role": "assistant", "content": fallback})
             return fallback
 
-    async def _handle_tool_use(self, response: Any, tool_handler: Any) -> str:
-        """
-        Process Claude's tool use request — call the tool and send result back.
-
-        Claude might request to book an appointment or send WhatsApp.
-        We execute that tool, return the result to Claude, and get the
-        final response meant for the caller.
-        """
-        # ── Extract tool use block from response ──
+    async def _handle_anthropic_tool_use(self, response: Any, tool_handler: Any) -> str:
+        """Process Claude's tool use request — call the tool and send result back."""
         tool_use_block = None
         text_parts: list[str] = []
 
@@ -428,29 +619,17 @@ class ClaudeLLMService:
             self._conversation.append({"role": "assistant", "content": combined})
             return combined
 
-        logger.info(
-            "claude_llm.tool_use",
-            tool=tool_use_block.name,
-            input=tool_use_block.input,
-        )
+        logger.info("llm.tool_use", provider="anthropic", tool=tool_use_block.name, input=tool_use_block.input)
 
-        # ── Execute the tool via handler ──
         tool_result = "Tool not available"
         if tool_handler:
             try:
-                tool_result = await tool_handler(
-                    tool_name=tool_use_block.name,
-                    tool_input=tool_use_block.input,
-                )
+                tool_result = await tool_handler(tool_name=tool_use_block.name, tool_input=tool_use_block.input)
             except Exception as exc:
-                logger.error("claude_llm.tool_error", tool=tool_use_block.name, error=str(exc))
+                logger.error("llm.tool_error", tool=tool_use_block.name, error=str(exc))
                 tool_result = f"Error: {str(exc)}"
 
-        # ── Send tool result back to Claude for final response ──
-        self._conversation.append({
-            "role": "assistant",
-            "content": response.content,
-        })
+        self._conversation.append({"role": "assistant", "content": response.content})
         self._conversation.append({
             "role": "user",
             "content": [{
@@ -460,27 +639,27 @@ class ClaudeLLMService:
             }],
         })
 
-        # ── Get Claude's final response after tool execution ──
         try:
             final_response = await self._client.messages.create(
-                model=settings.ANTHROPIC_MODEL,
+                model=self._model,
                 max_tokens=150,
                 system=self._system_prompt,
                 messages=self._conversation,
             )
-
-            final_text = self._extract_text(final_response)
+            final_text = self._extract_anthropic_text(final_response)
             self._conversation.append({"role": "assistant", "content": final_text})
             return final_text
 
         except Exception as exc:
-            logger.error("claude_llm.final_response_error", error=str(exc))
+            logger.error("llm.final_response_error", provider="anthropic", error=str(exc))
             return "Aapka appointment ho gaya hai. WhatsApp pe confirmation aa jayega."
 
-    def _extract_text(self, response: Any) -> str:
+    def _extract_anthropic_text(self, response: Any) -> str:
         """Extract text content from Claude's response blocks."""
         texts = [block.text for block in response.content if block.type == "text"]
         return " ".join(texts).strip()
+
+    # ── SHARED HELPERS ──
 
     def get_conversation_history(self) -> list[dict[str, str]]:
         """
@@ -496,7 +675,6 @@ class ClaudeLLMService:
             if isinstance(content, str):
                 simple_history.append({"role": role, "text": content})
             elif isinstance(content, list):
-                # ── Extract text from content blocks ──
                 texts = [
                     b.get("text", "") if isinstance(b, dict) else str(b)
                     for b in content
@@ -506,6 +684,10 @@ class ClaudeLLMService:
                     simple_history.append({"role": role, "text": " ".join(texts)})
 
         return simple_history
+
+
+# ── Keep backward-compatible alias ──
+ClaudeLLMService = LLMService
 
 
 # ═══════════════════════════════════════════════════
@@ -557,7 +739,7 @@ class BaseVoiceAgent(ABC):
 
         system_prompt = self.get_system_prompt()
         tools = self.get_tools()
-        self.llm = ClaudeLLMService(system_prompt=system_prompt, tools=tools)
+        self.llm = LLMService(system_prompt=system_prompt, tools=tools)
 
         logger.info(
             "agent.initialized",
@@ -584,14 +766,27 @@ class BaseVoiceAgent(ABC):
         - book_appointment, check_available_slots, etc.
         """
 
-    @abstractmethod
     async def handle_tool(self, tool_name: str, tool_input: dict[str, Any]) -> Any:
         """
-        Execute a tool requested by Claude.
-
-        Called when Claude decides to book an appointment,
-        send WhatsApp, or perform any other action.
+        Execute a tool requested by Claude during the conversation.
+        Routes to the appropriate MCP server via the unified registry.
         """
+        from mcp_servers.registry import tool_registry
+
+        business_id = self.business.get("id", "unknown")
+        business_name = self.business.get("name", "Business")
+
+        # ── Auto-inject business info so Claude doesn't need to provide it ──
+        enriched_input = {**tool_input, "business_id": business_id, "business_name": business_name}
+
+        logger.info(
+            "agent.tool_call",
+            tool=tool_name,
+            input=tool_input,
+            business_id=business_id,
+        )
+
+        return await tool_registry.execute(tool_name, enriched_input)
 
     # ── PIPELINE PROCESSING ──
 
@@ -750,7 +945,7 @@ class BaseVoiceAgent(ABC):
         if any(w in full_text for w in ["appointment ho gaya", "book kar", "confirm"]):
             return "appointment_booked"
         if any(w in full_text for w in ["cancel", "rescheduled"]):
-            return "appointment_booked"
+            return "info_provided"
         if any(w in full_text for w in ["connect karti", "escalat", "manager"]):
             return "escalated_to_human"
         if len(transcript) <= 1:

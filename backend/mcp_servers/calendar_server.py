@@ -36,11 +36,13 @@ server = Server("calendar-server")
 
 # ── In-memory calendar events (for mock mode / MVP) ──
 # In production, this would integrate with Google Calendar or similar
+_today_str = datetime.now().strftime("%Y-%m-%d")
+
 _mock_calendar: list[dict[str, Any]] = [
     {
         "id": "cal-001",
         "title": "Dr. Sharma — Morning OPD",
-        "date": "2025-03-20",
+        "date": _today_str,
         "time": "09:00",
         "duration_min": 180,
         "type": "block",
@@ -48,7 +50,7 @@ _mock_calendar: list[dict[str, Any]] = [
     {
         "id": "cal-002",
         "title": "Lunch Break",
-        "date": "2025-03-20",
+        "date": _today_str,
         "time": "13:00",
         "duration_min": 60,
         "type": "break",
@@ -56,7 +58,7 @@ _mock_calendar: list[dict[str, Any]] = [
     {
         "id": "cal-003",
         "title": "Dr. Sharma — Evening OPD",
-        "date": "2025-03-20",
+        "date": _today_str,
         "time": "14:00",
         "duration_min": 240,
         "type": "block",

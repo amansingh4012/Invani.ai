@@ -167,6 +167,15 @@ export function fetchBusiness(
   return apiFetch<BusinessResponse>(`/api/businesses/${businessId}`);
 }
 
+/** Assign a new Exotel Virtual Number from the pool */
+export function assignNumber(
+  businessId: string
+): Promise<{ success: boolean; business: Record<string, unknown>; message: string }> {
+  return apiFetch(`/api/businesses/${businessId}/assign-number`, {
+    method: 'POST',
+  });
+}
+
 /** Update business settings (partial update) */
 export function updateBusiness(
   businessId: string,

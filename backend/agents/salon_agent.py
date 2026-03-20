@@ -182,44 +182,7 @@ class SalonAgent(BaseVoiceAgent):
             },
         ]
 
-    async def handle_tool(self, tool_name: str, tool_input: dict[str, Any]) -> Any:
-        """
-        Execute a tool requested by Claude during salon calls.
 
-        Routes to the appropriate MCP server's handle_tool_direct function.
-        Injects business_id automatically so Claude doesn't need to know it.
-        """
-        from mcp_servers.appointments_server import handle_tool_direct as appointments_handle
-        from mcp_servers.whatsapp_server import handle_tool_direct as whatsapp_handle
-        from mcp_servers.calendar_server import handle_tool_direct as calendar_handle
-
-        business_id = self.business.get("id", "unknown")
-        business_name = self.business.get("name", "Salon")
-
-        # ── Auto-inject business_id into tool input ──
-        enriched_input = {**tool_input, "business_id": business_id, "business_name": business_name}
-
-        logger.info(
-            "salon_agent.tool_call",
-            tool=tool_name,
-            input=tool_input,
-            business_id=business_id,
-        )
-
-        # ── Route to the correct MCP server ──
-        appointment_tools = {"book_appointment", "check_available_slots", "cancel_appointment", "get_appointments_for_day"}
-        whatsapp_tools = {"send_whatsapp", "send_appointment_confirmation", "send_reminder"}
-        calendar_tools = {"add_calendar_event", "get_day_schedule"}
-
-        if tool_name in appointment_tools:
-            return await appointments_handle(tool_name, enriched_input)
-        elif tool_name in whatsapp_tools:
-            return await whatsapp_handle(tool_name, enriched_input)
-        elif tool_name in calendar_tools:
-            return await calendar_handle(tool_name, enriched_input)
-        else:
-            logger.warning("salon_agent.unknown_tool", tool=tool_name)
-            return {"error": f"Unknown tool: {tool_name}"}
 
 
 if __name__ == "__main__":
