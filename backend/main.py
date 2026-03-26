@@ -131,9 +131,8 @@ async def exotel_webhook(request: Request) -> JSONResponse:
         body = await request.body()
         signature = request.headers.get("X-Exotel-Signature", "")
 
-        # ── Verify webhook signature ──
-        # Skip for GET requests (Passthru applets) since they don't have bodies for HMAC
-        if request.method != "GET" and not verify_exotel_signature(body, signature):
+        # ── Verify webhook signature (skipped in mock mode) ──
+        if not verify_exotel_signature(body, signature):
             logger.warning("webhook.invalid_signature")
             return JSONResponse(
                 status_code=403,
